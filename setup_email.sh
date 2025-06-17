@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# setup_email.sh - Instala y configura ISC DHCP, BIND9, MySQL, Postfix, mailx, Dovecot POP3, IMAP y Roundcube (webmail) en Ubuntu Server
+# setup_email.sh - Instala y configura ISC DHCP, BIND9, MySQL, Postfix, mailx, Dovecot (POP3/IMAP) y Roundcube (webmail) en Ubuntu Server
 # Uso: sudo ./setup_email.sh
 
 set -e
@@ -29,10 +29,10 @@ ip addr flush dev ${INT_IF}
 ip addr add ${server_ip}/24 dev ${INT_IF}
 
 # 2) Instalar paquetes esenciales
-echo "[INFO] Instalando paquetes: ISC DHCP, BIND9, MySQL, Postfix, mailx, Dovecot POP3, Dovecot IMAP, Roundcube y Apache2..."
+echo "[INFO] Instalando paquetes: ISC DHCP, BIND9, MySQL, Postfix, mailx, Dovecot, Roundcube y Apache2..."
 DEBIAN_FRONTEND=noninteractive apt install -y \
   isc-dhcp-server bind9 mysql-server postfix mailutils \
-  dovecot-pop3d dovecot-imapd roundcube roundcube-mysql apache2
+  dovecot-core dovecot-imapd dovecot-pop3d roundcube roundcube-mysql apache2
 
 # 3) Configurar ISC DHCP para escuchar en INT_IF
 echo "[INFO] Estableciendo interfaz de DHCP en ${INT_IF}..."
@@ -40,7 +40,7 @@ cat > /etc/default/isc-dhcp-server <<EOF
 INTERFACESv4="${INT_IF}"
 EOF
 
-# 4) /etc/dhcp/dhcpd.conf
+# 4) Configurar DHCP
 echo "[INFO] Generando /etc/dhcp/dhcpd.conf..."
 cat > /etc/dhcp/dhcpd.conf <<EOF
 option domain-name "${domain}";
@@ -50,6 +50,7 @@ default-lease-time 600;
 max-lease-time 7200;
 
 authoritative;
+
 subnet ${network} netmask ${netmask} {
   range ${range_start} ${range_end};
   option routers ${gateway};
@@ -57,7 +58,7 @@ subnet ${network} netmask ${netmask} {
 }
 EOF
 
-# 5) BIND9 configs
+# 5) Configurar BIND9
 echo "[INFO] Configurando BIND9..."
 cat > /etc/bind/named.conf.options <<EOF
 options {
@@ -86,7 +87,7 @@ echo "[INFO] Creando archivos de zona DNS..."
 cat > ${zone_dir}/${zone_file} <<EOF
 \$TTL 604800
 @ IN SOA ns1.${domain}. admin.${domain}. (
-    5 ; Serial
+    6 ; Serial
     604800 ; Refresh
     86400 ; Retry
     2419200 ; Expire
@@ -103,7 +104,7 @@ EOF
 cat > ${zone_dir}/db.${reverse_zone} <<EOF
 \$TTL 604800
 @ IN SOA ns1.${domain}. admin.${domain}. (
-    5 ; Serial
+    6 ; Serial
     604800 ; Refresh
     86400 ; Retry
     2419200 ; Expire
@@ -113,7 +114,7 @@ cat > ${zone_dir}/db.${reverse_zone} <<EOF
 20 IN PTR mail.${domain}.
 EOF
 
-# 7) Postfix básico
+# 7) Configurar Postfix básico
 echo "[INFO] Configurando Postfix..."
 postconf -e "myhostname = mail.${domain}"
 postconf -e "mydomain = ${domain}"
@@ -130,29 +131,25 @@ echo "set smtp=smtp://${server_ip}" >> /etc/mail.rc
 echo "set from=mail@${domain}" >> /etc/mail.rc
 echo "set ssl-verify=ignore" >> /etc/mail.rc
 
-# 9) Dovecot POP3/IMAP
+# 9) Configurar Dovecot POP3/IMAP
 echo "[INFO] Configurando Dovecot POP3 e IMAP..."
 sed -i 's/^#protocols =.*/protocols = pop3 imap lmtp/' /etc/dovecot/dovecot.conf
 sed -i 's|^#mail_location =.*|mail_location = maildir:~/Maildir|' /etc/dovecot/conf.d/10-mail.conf
 # POP3 listener
 echo "service pop3-login { inet_listener pop3 { port = 110; } }" >> /etc/dovecot/conf.d/10-master.conf
-# IMAP listener (puerto 143)
+# IMAP listener
 echo "service imap-login { inet_listener imap { port = 143; } }" >> /etc/dovecot/conf.d/10-master.conf
 
 # 10) Roundcube Webmail
 echo "[INFO] Configurando Roundcube webmail..."
-# Habilitar sitio roundcube
 cp /etc/apache2/sites-available/000-default.conf /etc/apache2/sites-available/round.conf
-# Ajustar ServerName y DocumentRoot
 sed -i "s|ServerName .*|ServerName webmail.${domain}|" /etc/apache2/sites-available/round.conf || echo "ServerName webmail.${domain}" >> /etc/apache2/sites-available/round.conf
 sed -i "s|DocumentRoot .*|DocumentRoot /var/lib/roundcube|" /etc/apache2/sites-available/round.conf
-# Agregar Directory
 cat >> /etc/apache2/sites-available/round.conf <<EOF
 <Directory /var/lib/roundcube>
     Require all granted
 </Directory>
 EOF
-# Enlazar el sitio
 ln -sf /etc/apache2/sites-available/round.conf /etc/apache2/sites-enabled/round.conf
 
 # 11) Crear usuarios de prueba
@@ -167,18 +164,18 @@ done
 
 # 12) Reiniciar servicios
 echo "[INFO] Reiniciando servicios: DHCP, DNS, MySQL, Postfix, Dovecot, Apache..."
-systemctl restart isc-dhcp-server bind9 mysql postfix dovecot-pop3d apache2
+systemctl restart isc-dhcp-server bind9 mysql postfix dovecot apache2
 
 # 13) Verificación
 echo "[INFO] Estado de servicios:"
-systemctl is-active isc-dhcp-server bind9 mysql postfix dovecot-pop3d apache2
+systemctl is-active isc-dhcp-server bind9 mysql postfix dovecot apache2
 
 if systemctl is-active isc-dhcp-server >/dev/null && \
-   systemctl is-active bind9 >/dev/null && \
-   systemctl is-active mysql >/dev/null && \
-   systemctl is-active postfix >/dev/null && \
-   systemctl is-active dovecot-pop3d >/dev/null && \
-   systemctl is-active apache2 >/dev/null; then
+  systemctl is-active bind9 >/dev/null && \
+  systemctl is-active mysql >/dev/null && \
+  systemctl is-active postfix >/dev/null && \
+  systemctl is-active dovecot >/dev/null && \
+  systemctl is-active apache2 >/dev/null; then
   echo "[SUCCESS] Todos los servicios están activos."
 else
   echo "[ERROR] Revisa el estado de los servicios." >&2
