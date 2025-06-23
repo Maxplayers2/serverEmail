@@ -135,10 +135,21 @@ echo "set ssl-verify=ignore" >> /etc/mail.rc
 echo "[INFO] Configurando Dovecot POP3 e IMAP..."
 sed -i 's/^#protocols =.*/protocols = pop3 imap lmtp/' /etc/dovecot/dovecot.conf
 sed -i 's|^#mail_location =.*|mail_location = maildir:~/Maildir|' /etc/dovecot/conf.d/10-mail.conf
+
+cat >> /etc/dovecot/conf.d/10-master.conf <<'EOF'
 # POP3 listener
-echo "service pop3-login { inet_listener pop3 { port = 110; } }" >> /etc/dovecot/conf.d/10-master.conf
+service pop3-login {
+  inet_listener pop3 {
+    port = 110
+  }
+}
 # IMAP listener
-echo "service imap-login { inet_listener imap { port = 143; } }" >> /etc/dovecot/conf.d/10-master.conf
+service imap-login {
+  inet_listener imap {
+    port = 143
+  }
+}
+EOF
 
 # 10) Roundcube Webmail
 echo "[INFO] Configurando Roundcube webmail..."
