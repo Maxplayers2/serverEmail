@@ -13,6 +13,7 @@ INT_IF="enp0s8"  # interfaz hacia la LAN interna
 # Variables de red y dominio
 domain="midominio.local"
 network="10.160.0.0"
+netmask_cidr="/24"
 netmask="255.255.255.0"
 server_ip="10.160.0.1"
 gateway="10.160.0.1"
@@ -41,9 +42,9 @@ network:
   version: 2
   renderer: networkd
   ethernets:
-    ${auto_int}:
+    ${INT_IF}:
       addresses: ["${server_ip}${netmask_cidr}"]
-    ${auto_ext}:
+    ${EXT_IF}:
       dhcp4: true
 EOF
 netplan apply
