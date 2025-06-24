@@ -39,10 +39,10 @@ EOF
 netplan apply
 
 # 2) Instalar paquetes esenciales
-echo "[INFO] Instalando paquetes: ISC DHCP, BIND9, MySQL, Postfix, mailx, Dovecot, Roundcube y Apache2..."
-DEBIAN_FRONTEND=noninteractive apt install -y \
-  isc-dhcp-server bind9 bind9-utils mysql-server postfix mailutils \
-  dovecot-core dovecot-imapd dovecot-pop3d roundcube roundcube-mysql apache2
+# echo "[INFO] Instalando paquetes: ISC DHCP, BIND9, MySQL, Postfix, mailx, Dovecot, Roundcube y Apache2..."
+# DEBIAN_FRONTEND=noninteractive apt install -y \
+#   isc-dhcp-server bind9 bind9-utils mysql-server postfix mailutils \
+#   dovecot-core dovecot-imapd dovecot-pop3d roundcube roundcube-mysql apache2
 
 # 3) Configurar ISC DHCP para escuchar en INT_IF
 echo "[INFO] Estableciendo interfaz de DHCP en ${INT_IF}..."
