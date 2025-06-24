@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# setup_email.sh - Instala y configura ISC DHCP, BIND9, MySQL, Postfix, mailx, Dovecot (POP3/IMAP) y Roundcube (webmail) en Ubuntu Server
+# setup_email.sh - Instala y configura ISC DHCP, BIND9, MySQL, Postfix, mailx, Dovecot (POP3/IMAP) y Roundcube (mail) en Ubuntu Server
 # Uso: sudo ./setup_email.sh
 
 set -e
@@ -12,17 +12,17 @@ INT_IF="enp0s8"  # interfaz hacia la LAN interna
 
 # Variables de red y dominio
 domain="midominio.local"
-network="10.160.0.0"
+network="10.160.1.0"
 netmask_cidr="/24"
 netmask="255.255.255.0"
-server_ip="10.160.0.1"
-gateway="10.160.0.1"
+server_ip="10.160.1.1"
+gateway="10.160.1.1"
 dns_ip="$server_ip"
 zone_dir="/etc/bind/zones"
 zone_file="db.${domain}"
-reverse_zone="0.160.10.in-addr.arpa"
-range_start="10.160.0.10"
-range_end="10.160.0.200"
+reverse_zone="1.160.10.in-addr.arpa"
+range_start="10.160.1.10"
+range_end="10.160.1.200"
 
 # 1) Configurar IP estática en INT_IF
 echo "[INFO] Configurando Netplan..."
@@ -107,10 +107,10 @@ cat > ${zone_dir}/${zone_file} <<EOF
 
  IN NS server.${domain}.
 server IN A ${dns_ip}
-mail IN A 10.160.0.3
-smtp IN CNAME mail.${domain}.
-pop3 IN CNAME mail.${domain}.
-@ IN MX 10 mail.${domain}.
+mail IN cname server
+smtp IN CNAME server
+pop3 IN CNAME server
+${domain} IN MX 10 mail.${domain}.
 EOF
 
 cat > ${zone_dir}/db.${reverse_zone} <<EOF
@@ -140,6 +140,7 @@ postconf -e "mydestination = localhost, ${domain}, mail.${domain}"
 postconf -e "relayhost ="
 postconf -e "mynetworks = 127.0.0.0/8, ${network}/24"
 postconf -e "home_mailbox = Maildir/"
+postconf -e "mailbox_command = "
 
 # 8) mailx configuration
 echo "set smtp=smtp://${server_ip}" >> /etc/mail.rc
@@ -166,17 +167,17 @@ service imap-login {
 }
 EOF
 
-# 10) Roundcube Webmail
-echo "[INFO] Configurando Roundcube webmail..."
+# 10) Roundcube mail
+echo "[INFO] Configurando Roundcube mail..."
 cp /etc/apache2/sites-available/000-default.conf /etc/apache2/sites-available/round.conf
-sed -i "s|ServerName .*|ServerName webmail.${domain}|" /etc/apache2/sites-available/round.conf || echo "ServerName webmail.${domain}" >> /etc/apache2/sites-available/round.conf
+sed -i "s|ServerName .*|ServerName mail.${domain}|" /etc/apache2/sites-available/round.conf || echo "ServerName mail.${domain}" >> /etc/apache2/sites-available/round.conf
 sed -i "s|DocumentRoot .*|DocumentRoot /var/lib/roundcube|" /etc/apache2/sites-available/round.conf
 cat >> /etc/apache2/sites-available/round.conf <<EOF
 <Directory /var/lib/roundcube>
     Require all granted
 </Directory>
 EOF
-ln -sf /etc/apache2/sites-available/round.conf /etc/apache2/sites-enabled/round.conf
+a2ensite /etc/apache2/sites-enabled/round.conf
 
 # 11) Crear usuarios de prueba
 echo "[INFO] Creando usuarios de prueba..."
