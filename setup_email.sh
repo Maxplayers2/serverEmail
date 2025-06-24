@@ -35,6 +35,19 @@ DEBIAN_FRONTEND=noninteractive apt install -y \
   dovecot-core dovecot-imapd dovecot-pop3d roundcube roundcube-mysql apache2
 
 # 3) Configurar ISC DHCP para escuchar en INT_IF
+echo "[INFO] Configurando Netplan..."
+cat > /etc/netplan/00-installer-config.yaml <<EOF
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${auto_int}:
+      addresses: ["${server_ip}${netmask_cidr}"]
+    ${auto_ext}:
+      dhcp4: true
+EOF
+netplan apply
+
 echo "[INFO] Estableciendo interfaz de DHCP en ${INT_IF}..."
 cat > /etc/default/isc-dhcp-server <<EOF
 INTERFACESv4="${INT_IF}"
