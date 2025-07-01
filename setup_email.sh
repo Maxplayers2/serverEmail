@@ -1,226 +1,153 @@
 #!/bin/bash
 
-# setup_email.sh - Instala y configura ISC DHCP, BIND9, MySQL, Postfix, mailx, Dovecot (POP3/IMAP) y Roundcube (mail) en Ubuntu Server
+# setup_email.sh - Script de instalación
 # Uso: sudo ./setup_email.sh
 
 set -e
-echo "[INFO] Iniciando configuración del server..."
 
-# Interfaces
-EXT_IF="enp0s3"  # interfaz hacia Internet (no modificar)
-INT_IF="enp0s8"  # interfaz hacia la LAN interna
+echo "[INFO] Paso 0: Verificar interfaces y hostname"
+ip a | grep -E "enp0s3|enp0s8"
+hostname
 
-# Variables de red y dominio
-domain="midominio.local"
-network="10.160.1.0"
-netmask_cidr="/24"
-netmask="255.255.255.0"
-server_ip="10.160.1.1"
-gateway="10.160.1.1"
-dns_ip="$server_ip"
-zone_dir="/etc/bind/zones"
-zone_file="db.${domain}"
-reverse_zone="1.160.10.in-addr.arpa"
-range_start="10.160.1.10"
-range_end="10.160.1.200"
+echo "[INFO] Paso 1: Instalar paquetes esenciales"
+apt update
+apt install -y \
+  isc-dhcp-server bind9 bind9-utils postfix bsd-mailx \
+  dovecot-pop3d dovecot-imapd mysql-server roundcube roundcube-mysql apache2
 
-# 1) Configurar IP estática en INT_IF
-echo "[INFO] Configurando Netplan..."
+# Variables
+NETWORK="10.10.10.0/24"
+SERVER_IP="10.10.10.1"
+DOMAIN="midominio.local"
+INT_IF="enp0s8"
+EXT_IF="enp0s3"
+ZONE_DIR="/etc/bind/zonas"
+
+echo "[INFO] Paso 2: Configurar Netplan"
 cat > /etc/netplan/00-installer-config.yaml <<EOF
 network:
   version: 2
   renderer: networkd
   ethernets:
     ${INT_IF}:
-      addresses: ["${server_ip}${netmask_cidr}"]
+      addresses: ["${SERVER_IP}/${NETWORK#*/}"]
     ${EXT_IF}:
       dhcp4: true
 EOF
 netplan apply
 
-# 2) Instalar paquetes esenciales
-# echo "[INFO] Instalando paquetes: ISC DHCP, BIND9, MySQL, Postfix, mailx, Dovecot, Roundcube y Apache2..."
-# DEBIAN_FRONTEND=noninteractive apt install -y \
-#   isc-dhcp-server bind9 bind9-utils mysql-server postfix mailutils \
-#   dovecot-core dovecot-imapd dovecot-pop3d roundcube roundcube-mysql apache2
+echo "[INFO] Paso 3: Configurar DHCP (/etc/dhcp/dhcpd.conf y /etc/default)"
+cat >> /etc/dhcp/dhcpd.conf <<EOF
 
-# 3) Configurar ISC DHCP para escuchar en INT_IF
-echo "[INFO] Estableciendo interfaz de DHCP en ${INT_IF}..."
-cat > /etc/default/isc-dhcp-server <<EOF
-INTERFACESv4="${INT_IF}"
-EOF
-
-# 4) Configurar DHCP
-echo "[INFO] Generando /etc/dhcp/dhcpd.conf..."
-cat > /etc/dhcp/dhcpd.conf <<EOF
-
-default-lease-time 600;
-max-lease-time 7200;
-
-authoritative;
-
-subnet ${network} netmask ${netmask} {
-  range ${range_start} ${range_end};
-  option routers ${gateway};
-  option broadcast-address 10.160.0.255;
-  option domain-name "${domain}";
-  option domain-name-servers ${dns_ip};
+# Grupo midominio generado por script
+group midominio {
+  subnet ${NETWORK%/*} netmask 255.255.255.0 {
+    range 10.10.10.10 10.10.10.200;
+    option domain-name-servers ${SERVER_IP};
+    option domain-name "${DOMAIN}";
+    option subnet-mask 255.255.255.0;
+    option routers ${SERVER_IP};
+    option broadcast-address 10.10.10.255;
+    authoritative;
+  }
 }
 EOF
 
-# 5) Configurar BIND9
-echo "[INFO] Configurando BIND9..."
+# Validar sintaxis DHCP
+dhcpd -t -cf /etc/dhcp/dhcpd.conf
+
+# Interfaz para DHCP
+sed -i "/INTERFACESv4=/c\INTERFACESv4=\"${INT_IF}\"" /etc/default/isc-dhcp-server
+systemctl restart isc-dhcp-server
+
+echo "[INFO] Paso 4: Configurar DNS (BIND9)"
+# Firewall
+if ufw status | grep -q active; then
+  ufw allow Bind9
+fi
+
+# named.conf.options
 cat > /etc/bind/named.conf.options <<EOF
 options {
-    directory "/var/cache/bind";
-    listen-on { any; };
-    allow-query { localhost; ${network}${netmask_cidr}; };
-    forwarders {
-        8.8.8.8; 
-    }; 
-    dnssec-validation no;
+  directory "/var/cache/bind";
+  listen-on { any; };
+  allow-query { localhost; 10.10.10.0/24; };
+  forwarders { 8.8.8.8; };
+  dnssec-validation no;
+  listen-on-v6 { none; };
 };
 EOF
-mkdir -p ${zone_dir}
-cat > /etc/bind/named.conf.local <<EOF
-zone "${domain}" IN {
+
+# Forzar IPv4 en named
+sed -i "/^OPTIONS=/c\OPTIONS=\"-u bind -4\"" /etc/default/named
+named-checkconf
+systemctl restart bind9
+
+echo "[INFO] Paso 5: Habilitar IP forwarding y NAT"
+# sysctl
+sed -i "/^#*net.ipv4.ip_forward/c\net.ipv4.ip_forward = 1" /etc/sysctl.d/99-sysctl.conf
+sysctl --system
+# iptables NAT
+iptables -t nat -A POSTROUTING -s ${NETWORK%/*} -o ${EXT_IF} -j MASQUERADE
+
+echo "[INFO] Paso 6: Añadir zonas a named.conf.local"
+cat >> /etc/bind/named.conf.local <<EOF
+
+zone "${DOMAIN}" IN {
   type master;
-  file "${zone_dir}/${zone_file}";
+  file "${ZONE_DIR}/db.${DOMAIN}";
 };
-zone "${reverse_zone}" {
+zone "${NETWORK%%.*}.10.in-addr.arpa" IN {
   type master;
-  file "${zone_dir}/db.${reverse_zone}";
+  file "${ZONE_DIR}/db.${NETWORK%%.*}";
 };
 EOF
+mkdir -p ${ZONE_DIR}
 
-# 6) Zonas DNS (directa e inversa)
-echo "[INFO] Creando archivos de zona DNS..."
-cat > ${zone_dir}/${zone_file} <<EOF
-\$TTL 604800
-@ IN SOA ${domain}. root.${domain}. (
-    6 ; Serial
-    604800 ; Refresh
-    86400 ; Retry
-    2419200 ; Expire
-    604800 ) ; Negative Cache TTL
-;
+# Copiar plantillas y configurar zona directa
+cp /etc/bind/db.local ${ZONE_DIR}/db.${DOMAIN}
+sed -i "/IN SOA/,/;/c\; Zona directa ${DOMAIN}\n\$TTL 604800\n@ IN SOA server.${DOMAIN}. root.${DOMAIN}. (2 604800 86400 2419200 604800)\n@ IN NS server.${DOMAIN}.\nserver IN A ${SERVER_IP}\n" ${ZONE_DIR}/db.${DOMAIN}
 
- IN NS server.${domain}.
-server IN A ${dns_ip}
-mail IN cname server
-smtp IN CNAME server
-pop3 IN CNAME server
-${domain} IN MX 10 mail.${domain}.
-EOF
+# Copiar plantilla inversa
+cp ${ZONE_DIR}/db.${DOMAIN} ${ZONE_DIR}/db.${NETWORK%%.*}
+sed -i "/IN SOA/,/;/c\; Zona inversa ${NETWORK%/*}\n\$TTL 604800\n@ IN SOA server.${DOMAIN}. root.${DOMAIN}. (2 604800 86400 2419200 604800)\n@ IN NS server.${DOMAIN}.\n1 IN PTR server.${DOMAIN}." ${ZONE_DIR}/db.${NETWORK%%.*}
 
-cat > ${zone_dir}/db.${reverse_zone} <<EOF
-\$TTL 604800
-@ IN SOA ${domain}. admin.${domain}. (
-    6 ; Serial
-    604800 ; Refresh
-    86400 ; Retry
-    2419200 ; Expire
-    604800 ) ; Negative Cache TTL
-;
- IN NS server.${domain}.
-1 IN PTR server.${domain}.
-3 IN PTR mail.${domain}.
-EOF
+# Validar zonas
+named-checkzone ${DOMAIN} ${ZONE_DIR}/db.${DOMAIN}
+named-checkzone ${NETWORK%%.*}.10.in-addr.arpa ${ZONE_DIR}/db.${NETWORK%%.*}
+systemctl restart bind9
 
-hostnamectl set-hostname ${domain}
+echo "[INFO] Paso 7: Configurar Postfix"
+# Postfix main.cf
+postconf -e "mynetworks = 127.0.0.0/8, [::1]/128, 10.10.10.0/24"
+postconf -e "myhostname = ${DOMAIN}"
+echo "home_mailbox = Maildir/" >> /etc/postfix/main.cf
+systemctl restart postfix
 
-# 7) Configurar Postfix básico
-echo "[INFO] Configurando Postfix..."
-postconf -e "myhostname = mail.${domain}"
-postconf -e "mydomain = ${domain}"
-echo "${domain}" > /etc/mailname
-postconf -e "inet_interfaces = all"
-postconf -e "inet_protocols = ipv4"
-postconf -e "mydestination = localhost, ${domain}, mail.${domain}"
-postconf -e "relayhost ="
-postconf -e "mynetworks = 127.0.0.0/8, ${network}/24"
-postconf -e "home_mailbox = Maildir/"
-postconf -e "mailbox_command = "
+echo "[INFO] Paso 8: Crear usuarios de prueba"
+adduser --disabled-password --gecos "" david && echo "david:123456" | chpasswd
+adduser --disabled-password --gecos "" profecristian && echo "profecristian:123456" | chpasswd
 
-# 8) mailx configuration
-echo "set smtp=smtp://${server_ip}" >> /etc/mail.rc
-echo "set from=mail@${domain}" >> /etc/mail.rc
-echo "set ssl-verify=ignore" >> /etc/mail.rc
+echo "[INFO] Paso 9: Configurar Dovecot POP3"
+sed -i "s/^#disable_plaintext_auth.*/disable_plaintext_auth = no/" /etc/dovecot/conf.d/10-auth.conf
+sed -i "s/^#mail_location.*/mail_location = maildir:\~\/Maildir/" /etc/dovecot/conf.d/10-mail.conf
+systemctl restart dovecot
 
-# 9) Configurar Dovecot POP3/IMAP
-echo "[INFO] Configurando Dovecot POP3 e IMAP..."
-sed -i 's/^#protocols =.*/protocols = pop3 imap lmtp/' /etc/dovecot/dovecot.conf
-sed -i 's|^#mail_location =.*|mail_location = maildir:~/Maildir|' /etc/dovecot/conf.d/10-mail.conf
-
-cat >> /etc/dovecot/conf.d/10-master.conf <<'EOF'
-# POP3 listener
-service pop3-login {
-  inet_listener pop3 {
-    port = 110
-  }
-}
-# IMAP listener
-service imap-login {
-  inet_listener imap {
-    port = 143
-  }
-}
-EOF
-
-# 10) Roundcube mail
-echo "[INFO] Configurando Roundcube mail..."
+echo "[INFO] Paso 10: Configurar IMAP/Wordpress Webmail Roundcube"
 cp /etc/apache2/sites-available/000-default.conf /etc/apache2/sites-available/round.conf
-sed -i "s|ServerName .*|ServerName mail.${domain}|" /etc/apache2/sites-available/round.conf || echo "ServerName mail.${domain}" >> /etc/apache2/sites-available/round.conf
+sed -i "s|ServerName .*|ServerName mail.${DOMAIN}|" /etc/apache2/sites-available/round.conf
 sed -i "s|DocumentRoot .*|DocumentRoot /var/lib/roundcube|" /etc/apache2/sites-available/round.conf
 cat >> /etc/apache2/sites-available/round.conf <<EOF
 <Directory /var/lib/roundcube>
-    Require all granted
+  Require all granted
 </Directory>
 EOF
-a2ensite /etc/apache2/sites-enabled/round.conf
+a2ensite round.conf
+systemctl reload apache2
 
-# 11) Crear usuarios de prueba
-echo "[INFO] Creando usuarios de prueba..."
-for user in profehermoso david; do
-  if ! id $user >/dev/null 2>&1; then
-    useradd -m -s /bin/bash $user
-    echo "$user:123456" | chpasswd
-    runuser -l $user -c "mkdir -p ~/Maildir/{cur,new,tmp}"
-  fi
+echo "[INFO] Configuración completa. Verificación final de servicios:"
+for svc in isc-dhcp-server bind9 postfix dovecot apache2 mysql; do
+  echo -n "$svc: " && systemctl is-active $svc
 done
 
-# 12) Reiniciar servicios
-echo "[INFO] Reiniciando servicios: DHCP, DNS, MySQL, Postfix, Dovecot, Apache..."
-systemctl restart isc-dhcp-server bind9 mysql postfix dovecot apache2
-
-# 13) Habilitamos servicios en firewall
-echo "[INFO] Configurando UFW para permitir tráfico de servicios..."
-ufw allow bind9
-ufw allow mysql
-ufw allow 'Postfix'
-ufw allow 'Dovecot'
-ufw allow 'Apache Full'
-ufw allow 110/tcp  # POP3
-ufw allow 143/tcp  # IMAP
-ufw allow 25/tcp   # SMTP
-ufw allow 587/tcp  # SMTP (STARTTLS)
-ufw allow 993/tcp  # IMAP SSL
-ufw allow 995/tcp  # POP3 SSL
-ufw allow 80/tcp   # HTTP
-ufw allow 443/tcp  # HTTPS
-ufw reload
-
-# 14) Verificación
-echo "[INFO] Estado de servicios:"
-systemctl is-active isc-dhcp-server bind9 mysql postfix dovecot apache2
-
-if systemctl is-active isc-dhcp-server >/dev/null && \
-  systemctl is-active bind9 >/dev/null && \
-  systemctl is-active mysql >/dev/null && \
-  systemctl is-active postfix >/dev/null && \
-  systemctl is-active dovecot >/dev/null && \
-  systemctl is-active apache2 >/dev/null; then
-  echo "[SUCCESS] Todos los servicios están activos."
-else
-  echo "[ERROR] Revisa el estado de los servicios." >&2
-fi
+echo "[SUCCESS] PoC lista."
